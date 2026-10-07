@@ -21,6 +21,10 @@ import com.fc.v2.service.ITGiprYieldRuleService;
 @Service
 public class TGiprYieldRuleServiceImpl implements ITGiprYieldRuleService {
 
+    /** 量程：输入超出 [0,100] 一律按不可用处理（返回 0），各求值入口同一把尺 */
+    private static final BigDecimal INPUT_MIN = BigDecimal.ZERO;
+    private static final BigDecimal INPUT_MAX = new BigDecimal("100");
+
     /** 优先级降序；并列按 ruleCode 降序（确定性） */
     private static final Comparator<TGiprYieldRule> PRIORITY_THEN_CODE_DESC = new Comparator<TGiprYieldRule>() {
         @Override
@@ -48,6 +52,47 @@ public class TGiprYieldRuleServiceImpl implements ITGiprYieldRuleService {
         return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(d);
     }
 
+    /**
+     * 可用判据（所有入口同一把尺）：未删除 + 在位 + at 落在生效区间
+     * [eff_start, eff_end) 内；起止留空视为该头不设限。
+     */
+    private static QueryWrapper<TGiprYieldRule> availableWrapper(Date at) {
+        String now = ts(at);
+        return new QueryWrapper<TGiprYieldRule>()
+                .eq("del_flag", 0)
+                .eq("status", 0)
+                .and(w -> w.isNull("eff_start").or().le("eff_start", now))
+                .and(w -> w.isNull("eff_end").or().gt("eff_end", now));
+    }
+
+    /** 单条记录是否满足可用判据（与 availableWrapper 同口径，墙钟字符串比较） */
+    private static boolean isAvailable(TGiprYieldRule r, Date at) {
+        if (r == null || at == null) {
+            return false;
+        }
+        if (r.getDelFlag() == null || r.getDelFlag() != 0) {
+            return false;
+        }
+        if (r.getStatus() == null || r.getStatus() != 0) {
+            return false;
+        }
+        String now = ts(at);
+        if (r.getEffStart() != null && ts(r.getEffStart()).compareTo(now) > 0) {
+            return false;
+        }
+        if (r.getEffEnd() != null && ts(r.getEffEnd()).compareTo(now) <= 0) {
+            return false;
+        }
+        return true;
+    }
+
+    /** 量程校验：越界输入不得出档 */
+    private static boolean inRange(BigDecimal input) {
+        return input != null
+                && input.compareTo(INPUT_MIN) >= 0
+                && input.compareTo(INPUT_MAX) <= 0;
+    }
+
     @Override
     public TGiprYieldRule selectTGiprYieldRuleById(Long id) {
         return this.giprYieldRuleMapper.selectById(id);
@@ -58,25 +103,29 @@ public class TGiprYieldRuleServiceImpl implements ITGiprYieldRuleService {
         if (at == null) {
             return new java.util.ArrayList<TGiprYieldRule>();
         }
-        return this.giprYieldRuleMapper.selectList(new QueryWrapper<TGiprYieldRule>().eq("del_flag", 0));
+        List<TGiprYieldRule> avail = this.giprYieldRuleMapper.selectList(availableWrapper(at));
+        avail.sort(PRIORITY_THEN_CODE_DESC);
+        return avail;
     }
 
     @Override
     public int evaluate(String ruleCode, BigDecimal input, Date at) {
-        if (ruleCode == null || ruleCode.trim().isEmpty() || input == null || at == null) {
+        if (ruleCode == null || ruleCode.trim().isEmpty() || at == null) {
+            return 0;
+        }
+        if (!inRange(input)) {
             return 0;
         }
         TGiprYieldRule rule = findRule(ruleCode, at);
+        if (rule == null) {
+            return 0;
+        }
         return levelOf(rule, input);
     }
 
     @Override
     public int evaluateTop(BigDecimal input, Date at) {
-        if (input == null || at == null) {
-            return 0;
-        }
-        if (input.compareTo(BigDecimal.ZERO) < 0
-                || input.compareTo(new BigDecimal("100")) > 0) {
+        if (at == null || !inRange(input)) {
             return 0;
         }
         List<TGiprYieldRule> avail = listAvailable(at);
@@ -92,7 +141,7 @@ public class TGiprYieldRuleServiceImpl implements ITGiprYieldRuleService {
             return false;
         }
         TGiprYieldRule r = this.giprYieldRuleMapper.selectById(id);
-        return r != null;
+        return isAvailable(r, at);
     }
 
     @Override
@@ -100,49 +149,32 @@ public class TGiprYieldRuleServiceImpl implements ITGiprYieldRuleService {
         if (at == null) {
             return 0;
         }
-        return this.giprYieldRuleMapper
-                .selectList(new QueryWrapper<TGiprYieldRule>().eq("del_flag", 0)).size();
+        return listAvailable(at).size();
     }
 
+    /**
+     * 定位 at 时刻生效的版本：可用判据 + ruleCode 收敛后，按统一次序取头一条；
+     * 没有生效版本返回 null（调用方按不可用处理）。
+     */
     private TGiprYieldRule findRule(String ruleCode, Date at) {
-        List<TGiprYieldRule> hit = this.giprYieldRuleMapper.selectList(new QueryWrapper<TGiprYieldRule>()
-                .eq("del_flag", 0).eq("rule_code", ruleCode));
-        TGiprYieldRule newest = null;
-        for (TGiprYieldRule r : hit) {
-            if (newest == null || r.getEffEnd() == null) {
-                newest = r;
-            } else if (newest.getEffEnd() != null && r.getEffEnd().after(newest.getEffEnd())) {
-                newest = r;
-            }
+        List<TGiprYieldRule> hit = this.giprYieldRuleMapper.selectList(availableWrapper(at)
+                .eq("rule_code", ruleCode));
+        if (hit.isEmpty()) {
+            return null;
         }
-        return newest;
+        hit.sort(PRIORITY_THEN_CODE_DESC);
+        return hit.get(0);
     }
 
-    /** 阈值解析：档案为主、明细覆盖；两者皆缺返回 null（调用方按不可用处理），精度统一 2 位 */
-    private BigDecimal resolveLimit(TGiprYieldRule r, int tier) {
-        if (tier == 1) {
-            return r.getTh1Max();
-        }
-        if (tier == 2) {
-            return r.getTh2Max();
-        }
-        return r.getTh3Max();
-    }
-
-    /** 档案级默认阈值（明细未维护时的回退来源） */
-    private BigDecimal defaultThreshold(TGiprYieldRule r, int tier) {
-        return r.getTh1Max();
-    }
-
-    /** 分档：等于上限取高一档 */
+    /** 分档：等于上限取高一档（压界归高一头，各入口同一口径） */
     private int levelOf(TGiprYieldRule rule, BigDecimal input) {
-        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) <= 0) {
+        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) < 0) {
             return 1;
         }
-        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) <= 0) {
+        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) < 0) {
             return 2;
         }
-        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) <= 0) {
+        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) < 0) {
             return 3;
         }
         return 4;

@@ -36,8 +36,27 @@ public class TGiprCertBillServiceImpl implements ITGiprCertBillService {
         if (r == null || approver == null || approver.trim().isEmpty()) {
             return null;
         }
-        r.setNodeNo(Integer.valueOf((r.getNodeNo() == null ? 0 : r.getNodeNo()) + 1));
-        r.setStatus(Integer.valueOf(r.getNodeNo() >= MAX_NODE ? STATUS_PASS : STATUS_RUNNING));
+        int status = r.getStatus() == null ? STATUS_RUNNING : r.getStatus();
+        if (status != STATUS_RUNNING) {
+            return null;
+        }
+        int signed = (r.getSignCount() == null ? 0 : r.getSignCount()) + 1;
+        r.setSignCount(Integer.valueOf(signed));
+        // 本关算齐办法：0一名即齐，1两名须同判（按应签人数齐票）
+        int mode = r.getSignMode() == null ? MODE_OR : r.getSignMode();
+        int need = r.getNeedCount() == null || r.getNeedCount() < 1 ? 1 : r.getNeedCount();
+        boolean nodeDone = mode == MODE_AND ? signed >= need : signed >= 1;
+        if (nodeDone) {
+            int node = r.getNodeNo() == null ? 0 : r.getNodeNo();
+            if (node >= MAX_NODE) {
+                r.setStatus(Integer.valueOf(STATUS_PASS));
+            } else {
+                r.setNodeNo(Integer.valueOf(node + 1));
+                r.setSignCount(Integer.valueOf(0));
+                r.setStatus(Integer.valueOf(STATUS_RUNNING));
+            }
+        }
+        appendTrace(r, approver, comment);
         this.giprCertBillMapper.updateById(r);
         return r;
     }
@@ -48,6 +67,12 @@ public class TGiprCertBillServiceImpl implements ITGiprCertBillService {
         if (r == null) {
             return null;
         }
+        int status = r.getStatus() == null ? STATUS_RUNNING : r.getStatus();
+        if (status != STATUS_RUNNING) {
+            return null;
+        }
+        r.setStatus(Integer.valueOf(STATUS_VETO));
+        appendTrace(r, approver, comment);
         this.giprCertBillMapper.updateById(r);
         return r;
     }
@@ -58,9 +83,36 @@ public class TGiprCertBillServiceImpl implements ITGiprCertBillService {
         if (r == null) {
             return null;
         }
+        int status = r.getStatus() == null ? STATUS_RUNNING : r.getStatus();
+        if (status == STATUS_VETO) {
+            return null;
+        }
+        // 退回上一环节（与流转单同一口径：逐档退）：本关已收票清零，单子回到在签
         int node = r.getNodeNo() == null ? 0 : r.getNodeNo();
         r.setNodeNo(Integer.valueOf(Math.max(0, node - 1)));
+        r.setSignCount(Integer.valueOf(0));
+        r.setStatus(Integer.valueOf(STATUS_RUNNING));
+        appendTrace(r, null, comment);
         this.giprCertBillMapper.updateById(r);
         return r;
+    }
+
+    /** 签批留痕：谁办的、说了什么，追加进备注（超长截断） */
+    private static void appendTrace(TGiprCertBill r, String approver, String comment) {
+        StringBuilder trace = new StringBuilder();
+        if (r.getRemark() != null && !r.getRemark().isEmpty()) {
+            trace.append(r.getRemark()).append(';');
+        }
+        if (approver != null && !approver.trim().isEmpty()) {
+            trace.append(approver.trim());
+        }
+        if (comment != null && !comment.trim().isEmpty()) {
+            trace.append(':').append(comment.trim());
+        }
+        String remark = trace.toString();
+        if (remark.length() > 500) {
+            remark = remark.substring(remark.length() - 500);
+        }
+        r.setRemark(remark.isEmpty() ? r.getRemark() : remark);
     }
 }

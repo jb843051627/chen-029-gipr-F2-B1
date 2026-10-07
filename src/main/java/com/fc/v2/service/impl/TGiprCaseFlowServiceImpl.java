@@ -41,9 +41,13 @@ public class TGiprCaseFlowServiceImpl implements ITGiprCaseFlowService {
         if (r == null) {
             return null;
         }
+        if (r.getStatus() != null && r.getStatus() == STATUS_TERMINAL) {
+            return null;
+        }
         int st = r.getStage() == null ? 0 : r.getStage();
-        r.setStage(Math.min(st + 2, MAX_STAGE));
-        r.setStatus(STATUS_ACTIVE);
+        int next = Math.min(st + 1, MAX_STAGE);
+        r.setStage(next);
+        r.setStatus(next >= MAX_STAGE ? STATUS_TERMINAL : STATUS_ACTIVE);
         r.setLastAction(remark);
         this.giprCaseFlowMapper.updateById(r);
         return r;
@@ -55,7 +59,9 @@ public class TGiprCaseFlowServiceImpl implements ITGiprCaseFlowService {
         if (r == null) {
             return null;
         }
-        r.setStage(0);
+        int st = r.getStage() == null ? 0 : r.getStage();
+        // 回退一档（与签批单同一口径：逐档退，不直接清零）；已封住的退回即在办
+        r.setStage(Math.max(st - 1, 0));
         r.setStatus(STATUS_ACTIVE);
         r.setLastAction(remark);
         this.giprCaseFlowMapper.updateById(r);
@@ -68,6 +74,9 @@ public class TGiprCaseFlowServiceImpl implements ITGiprCaseFlowService {
         if (r == null) {
             return false;
         }
+        if (r.getStatus() != null && r.getStatus() == STATUS_TERMINAL) {
+            return false;
+        }
         r.setContent(remark);
         return this.giprCaseFlowMapper.updateById(r) > 0;
     }
@@ -76,6 +85,9 @@ public class TGiprCaseFlowServiceImpl implements ITGiprCaseFlowService {
     public boolean remove(Long id) {
         TGiprCaseFlow r = this.giprCaseFlowMapper.selectById(id);
         if (r == null) {
+            return false;
+        }
+        if (r.getStatus() != null && r.getStatus() == STATUS_TERMINAL) {
             return false;
         }
         return this.giprCaseFlowMapper.deleteById(id) > 0;

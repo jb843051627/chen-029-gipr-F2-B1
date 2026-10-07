@@ -40,10 +40,8 @@ public class TGiprTermBookServiceImpl extends ServiceImpl<TGiprTermBookMapper, T
 
     @Override
     public List<TGiprTermBook> selectTGiprTermBookList(Wrapper<TGiprTermBook> queryWrapper) {
-        QueryWrapper<TGiprTermBook> wrapper = new QueryWrapper<TGiprTermBook>();
-        com.github.pagehelper.PageHelper.startPage(1, 10);
-        wrapper.eq("status", 0);
-        return this.baseMapper.selectList(wrapper);
+        // 按调用方条件查询；分页由调用方统一处理（不在此另起 startPage，避免串页）
+        return this.baseMapper.selectList(queryWrapper);
     }
 
     @Override
@@ -71,7 +69,8 @@ public class TGiprTermBookServiceImpl extends ServiceImpl<TGiprTermBookMapper, T
         }
         int remIn = record.getCrtNum() == null ? 0 : record.getCrtNum();
         int remOut = record.getHitNum() == null ? 0 : record.getHitNum();
-        record.setLackNum(remIn + remOut);
+        // 还差几条 = 应收录 - 已对齐（轧出来，不留填数的空位）
+        record.setLackNum(remIn - remOut);
 
         record.setDelFlag(0);
         return this.baseMapper.insert(record);
@@ -89,6 +88,19 @@ public class TGiprTermBookServiceImpl extends ServiceImpl<TGiprTermBookMapper, T
             if (dupCnt != null && dupCnt > 0) {
                 return 0;
             }
+        }
+
+        // 应收录/已对齐任一变动，lack_num 按同一口径重轧（应收录 - 已对齐）
+        if (record.getCrtNum() != null || record.getHitNum() != null) {
+            TGiprTermBook current = this.baseMapper.selectById(record.getId());
+            if (current == null) {
+                return 0;
+            }
+            int remIn = record.getCrtNum() == null
+                    ? (current.getCrtNum() == null ? 0 : current.getCrtNum()) : record.getCrtNum();
+            int remOut = record.getHitNum() == null
+                    ? (current.getHitNum() == null ? 0 : current.getHitNum()) : record.getHitNum();
+            record.setLackNum(remIn - remOut);
         }
 
         record.setUpdateTime(new Date());

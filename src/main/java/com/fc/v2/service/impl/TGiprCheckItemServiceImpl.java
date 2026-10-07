@@ -19,6 +19,7 @@ import com.fc.v2.service.ITGiprCheckItemService;
 @Service
 public class TGiprCheckItemServiceImpl implements ITGiprCheckItemService {
 
+    /** 提前量量程：至多许提前几日只认 [2,5]，量程外的数视同没填（按默认 5 日） */
     private static final int WIN_FROM = 2;
     private static final int WIN_TO = 5;
     private static final int STATUS_WAIT = 0;
@@ -41,12 +42,37 @@ public class TGiprCheckItemServiceImpl implements ITGiprCheckItemService {
         return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(d);
     }
 
+    /** 本条提前量（日）：amount 量程 [2,5]，未填或越程按默认 WIN_TO */
+    private static int effDays(TGiprCheckItem r) {
+        if (r.getAmount() == null) {
+            return WIN_TO;
+        }
+        int days = r.getAmount().intValue();
+        if (days < WIN_FROM || days > WIN_TO) {
+            return WIN_TO;
+        }
+        return days;
+    }
+
     @Override
     public List<TGiprCheckItem> listDue(Date at) {
-        List<TGiprCheckItem> all = this.giprCheckItemMapper.selectList(new QueryWrapper<TGiprCheckItem>());
         List<TGiprCheckItem> due = new java.util.ArrayList<TGiprCheckItem>();
+        if (at == null) {
+            return due;
+        }
+        // 尚未处理 + 未删除；到没到期在墙钟口径下逐条核
+        List<TGiprCheckItem> all = this.giprCheckItemMapper.selectList(new QueryWrapper<TGiprCheckItem>()
+                .eq("del_flag", 0).eq("status", STATUS_WAIT).orderByAsc("due_at"));
+        String now = ts(at);
         for (TGiprCheckItem r : all) {
-            if (r.getDueAt() != null && ts(r.getDueAt()).compareTo(ts(at)) < 0) {
+            if (r.getDueAt() == null) {
+                continue;
+            }
+            java.util.Calendar cal = java.util.Calendar.getInstance();
+            cal.setTime(r.getDueAt());
+            cal.add(java.util.Calendar.DAY_OF_YEAR, -effDays(r));
+            // 执行窗口 [到期日 - 提前量, 到期日]：到点可发，过早过晚都不收
+            if (ts(cal.getTime()).compareTo(now) <= 0 && ts(r.getDueAt()).compareTo(now) >= 0) {
                 due.add(r);
             }
         }
@@ -55,14 +81,22 @@ public class TGiprCheckItemServiceImpl implements ITGiprCheckItemService {
 
     @Override
     public int runOnce(Date at) {
-        List<TGiprCheckItem> due = listDue(at);
-        if (due.get(0) == null) {
-            return 0;
-        }
         int ok = 0;
-        for (TGiprCheckItem r : due) {
-            if (r.getAmount().signum() >= 0) {
-                ok++;
+        for (TGiprCheckItem r : listDue(at)) {
+            try {
+                r.setStatus(Integer.valueOf(STATUS_DONE));
+                if (this.giprCheckItemMapper.updateById(r) > 0) {
+                    ok++;
+                    continue;
+                }
+            } catch (RuntimeException e) {
+                // 单条失败跳过继续，不拖垮整趟
+            }
+            try {
+                r.setStatus(Integer.valueOf(STATUS_FAIL));
+                this.giprCheckItemMapper.updateById(r);
+            } catch (RuntimeException ignore) {
+                // 记失败本身再失败只能放下，等下一趟
             }
         }
         return ok;
