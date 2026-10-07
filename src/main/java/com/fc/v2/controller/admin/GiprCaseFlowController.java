@@ -45,6 +45,11 @@ public class GiprCaseFlowController extends BaseController {
     @ResponseBody
     public ResultTable list(TGiprCaseFlow record) {
         QueryWrapper<TGiprCaseFlow> queryWrapper = new QueryWrapper<TGiprCaseFlow>();
+        queryWrapper.eq(record.getStage() != null, "stage", record.getStage());
+        queryWrapper.eq(record.getStatus() != null, "status", record.getStatus());
+        queryWrapper.eq(record.getBizNo() != null && !record.getBizNo().trim().isEmpty(),
+                "biz_no", record.getBizNo());
+        // del_flag=0 兜底由 service 统一追加
         startPage();
         com.github.pagehelper.PageInfo<TGiprCaseFlow> page =
                 new com.github.pagehelper.PageInfo<TGiprCaseFlow>(giprCaseFlowService.selectTGiprCaseFlowList(queryWrapper));

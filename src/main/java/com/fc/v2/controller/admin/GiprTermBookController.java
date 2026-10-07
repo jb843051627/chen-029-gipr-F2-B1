@@ -7,6 +7,7 @@ import com.fc.v2.common.domain.ResultTable;
 import com.fc.v2.common.log.Log;
 import com.fc.v2.model.auto.TGiprTermBook;
 import com.fc.v2.service.ITGiprTermBookService;
+import com.fc.v2.util.StringUtils;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import org.apache.shiro.authz.annotation.RequiresPermissions;
@@ -17,6 +18,9 @@ import org.springframework.web.bind.annotation.*;
 
 /**
  * 名录对外公示多语言词条册 Controller
+ *
+ * 名录页与审核页共用同一组查询口径：状态、产品、取用式等条件全部显式透传，
+ * service 不再暗藏 status=0，撤下条目在哪页能看由该页显式给状态决定，两页不打架。
  *
  * @author fuce
  * @date 2026-09-12
@@ -45,10 +49,27 @@ public class GiprTermBookController extends BaseController {
     @ResponseBody
     public ResultTable list(TGiprTermBook record) {
         QueryWrapper<TGiprTermBook> queryWrapper = new QueryWrapper<TGiprTermBook>();
+        queryWrapper.eq(record.getStatus() != null, "status", record.getStatus());
+        queryWrapper.eq(record.getProdId() != null, "prod_id", record.getProdId());
+        queryWrapper.eq(record.getTermKind() != null, "term_kind", record.getTermKind());
+        queryWrapper.eq(StringUtils.isNotEmpty(record.getLevelKind()), "level_kind", record.getLevelKind());
+        queryWrapper.eq(StringUtils.isNotEmpty(record.getTermNo()), "term_no", record.getTermNo());
+        queryWrapper.like(StringUtils.isNotEmpty(record.getTermName()), "term_name", record.getTermName());
+        // 排序（ver_no、id 降序）与 del_flag 兜底由 service 统一追加，保证列表与详情同一口径
         startPage();
         com.github.pagehelper.PageInfo<TGiprTermBook> page =
                 new com.github.pagehelper.PageInfo<TGiprTermBook>(giprTermBookService.selectTGiprTermBookList(queryWrapper));
         return pageTable(page.getList(), page.getTotal());
+    }
+
+    @Log(title = "名录对外公示多语言词条册详情", action = "view")
+    @ApiOperation(value = "详情", notes = "按主键查同一条（与列表同一过滤口径）")
+    @GetMapping("/detail")
+    @RequiresPermissions("gipr:giprTermBook:view")
+    @ResponseBody
+    public AjaxResult detail(Long id) {
+        TGiprTermBook term = giprTermBookService.selectTGiprTermBookById(id);
+        return term == null ? AjaxResult.error("词条不存在") : AjaxResult.success().put("data", term);
     }
 
     @Log(title = "名录对外公示多语言词条册新增", action = "add")
@@ -61,12 +82,16 @@ public class GiprTermBookController extends BaseController {
     }
 
     @Log(title = "名录对外公示多语言词条册修改", action = "edit")
-    @ApiOperation(value = "修改保存", notes = "修改保存")
+    @ApiOperation(value = "修改保存", notes = "修改保存（须带 ver_no，并发时只认头一遭写入）")
     @PostMapping("/edit")
     @RequiresPermissions("gipr:giprTermBook:edit")
     @ResponseBody
     public AjaxResult editSave(TGiprTermBook record) {
-        return toAjax(giprTermBookService.updateTGiprTermBook(record));
+        int rows = giprTermBookService.updateTGiprTermBook(record);
+        if (rows > 0) {
+            return AjaxResult.success();
+        }
+        return AjaxResult.error("保存失败：词条已被他人先改过，请刷新后取最新版次再保存");
     }
 
     @Log(title = "名录对外公示多语言词条册删除", action = "remove")
